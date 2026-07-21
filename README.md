@@ -56,13 +56,40 @@ speech and language models, with an optional local Whisper engine.
 - For Styles / Transforms / Voice Profile: Apple Intelligence enabled
 - For the Whisper engine: a one-time model download (150 MB – 1.6 GB)
 
-## Build & run
+## Install
+
+Download the latest `Cadence-*.dmg` from
+[Releases](https://github.com/GNelster/Cadence/releases), open it, and drag
+**Cadence** into **Applications**.
+
+Cadence is **not notarized/signed by an Apple Developer ID**, so on first
+launch macOS Gatekeeper will refuse to open it ("Apple could not verify
+this app is free of malware"). To run it anyway:
+
+1. Try to open Cadence (it will be blocked).
+2. Go to **System Settings → Privacy & Security**, scroll down to the
+   security notice about Cadence, and click **Open Anyway**.
+3. Confirm in the dialog that appears.
+
+(Alternatively, right-click the app in Finder and choose **Open** — this
+also offers a bypass. Or run `xattr -dr com.apple.quarantine
+/Applications/Cadence.app` in Terminal.)
+
+This is a one-time step per install; macOS remembers your choice.
+
+## Build & run from source
 
 ```bash
-git clone <this-repo>
-cd cadence
+git clone https://github.com/GNelster/Cadence.git
+cd Cadence
 ./scripts/make_app.sh     # builds build/Cadence.app
 open build/Cadence.app
+```
+
+Or package a DMG for distribution:
+
+```bash
+./scripts/make_dmg.sh 1.0   # builds build/Cadence-1.0.dmg
 ```
 
 Optional: run `./scripts/make_signing_cert.sh` once to create a local

@@ -24,7 +24,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>local.cadence</string>
+    <string>com.gnelster.cadence</string>
     <key>CFBundleName</key>
     <string>Cadence</string>
     <key>CFBundleExecutable</key>

@@ -91,13 +91,29 @@ open build/Cadence.app
 Or package a DMG for distribution:
 
 ```bash
-./scripts/make_dmg.sh 1.0   # builds build/Cadence-1.0.dmg
+./scripts/make_dmg.sh 1.1 2   # builds build/Cadence-1.1.dmg (version, build number)
 ```
 
 Optional: run `./scripts/make_signing_cert.sh` once to create a local
 self-signed signing certificate — this keeps macOS permission grants valid
 across rebuilds. Without it the app is ad-hoc signed and you'll need to
-re-grant Accessibility after each rebuild.
+re-grant Accessibility after each rebuild. `make_dmg.sh`/`make_app.sh` will
+instead prefer a real "Developer ID Application" certificate (and notarize
+automatically, given a `cadence-notary` keychain profile) if one is set up
+for the signing team in `make_app.sh`.
+
+### Cutting a release
+
+Releases are built and published by hand — this app targets macOS 26 /
+Swift tools 6.2, which GitHub-hosted CI runners don't support yet, so
+there's no CI pipeline for this:
+
+```bash
+./scripts/make_dmg.sh 1.2 3
+git tag -a v1.2 -m "Cadence 1.2"
+git push origin v1.2
+gh release create v1.2 build/Cadence-1.2.dmg --title "Cadence 1.2" --generate-notes
+```
 
 ### One-time permissions
 

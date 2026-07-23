@@ -20,6 +20,14 @@ struct TextFormatter {
         "never mind", "nevermind", "back up", "backup", "go back",
     ]
 
+    /// Lighter-weight self-corrections than `cancelPhrases`: trims just the
+    /// one word immediately before the phrase, rather than everything back
+    /// to the start of the sentence.
+    static let deleteLastWordPhrases = [
+        "delete last word", "scratch last word", "undo last word",
+        "remove last word",
+    ]
+
     /// A structured value type a pinpoint correction can retarget.
     private struct CorrectionEntity {
         let name: String
@@ -75,6 +83,7 @@ struct TextFormatter {
 
         text = applyPinpointCorrection(to: text)
         text = applyCancelCommands(to: text)
+        text = applyDeleteLastWord(to: text)
         text = removeFillers(from: text)
         text = applySpokenCommands(to: text)
         text = applyDictionary(to: text)
@@ -216,6 +225,60 @@ struct TextFormatter {
         return text.startIndex
     }
 
+    /// Trims just the single word immediately before a `deleteLastWordPhrases`
+    /// match — a lighter self-correction than `applyCancelCommands`, which
+    /// discards back to the start of the sentence.
+    private func applyDeleteLastWord(to text: String) -> String {
+        var result = text
+        while let range = firstDeleteLastWordPhraseRange(in: result) {
+            let start = lastWordStart(before: range.lowerBound, in: result)
+            result.removeSubrange(start..<range.upperBound)
+            if start > result.startIndex, start < result.endIndex {
+                let before = result.index(before: start)
+                if !result[before].isWhitespace, !result[start].isWhitespace {
+                    result.insert(" ", at: start)
+                }
+            }
+        }
+        return result
+    }
+
+    private func firstDeleteLastWordPhraseRange(in text: String) -> Range<String.Index>? {
+        let alternatives = Self.deleteLastWordPhrases
+            .sorted { $0.count > $1.count }
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        let pattern = "(?i)\\b(\(alternatives))\\b[,.!]?\\s*"
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range, in: text)
+        else { return nil }
+        return range
+    }
+
+    /// Walks back from `index` past any trailing punctuation/whitespace,
+    /// then past the one word before that — the "last word" to delete.
+    private func lastWordStart(before index: String.Index, in text: String) -> String.Index {
+        var cursor = index
+        while cursor > text.startIndex {
+            let previous = text.index(before: cursor)
+            if text[previous].isWhitespace || ",.!?;:".contains(text[previous]) {
+                cursor = previous
+            } else {
+                break
+            }
+        }
+        while cursor > text.startIndex {
+            let previous = text.index(before: cursor)
+            if text[previous].isWhitespace || ".!?\n".contains(text[previous]) {
+                return cursor
+            }
+            cursor = previous
+        }
+        return text.startIndex
+    }
+
     private func applySpokenCommands(to text: String) -> String {
         var result = text
         let commands: [(pattern: String, replacement: String)] = [
@@ -309,6 +372,10 @@ struct TextFormatter {
              "Ignore that last part."),
             ("i love pizza. actually scratch that i hate it",
              "I love pizza. I hate it."),
+            ("hello world delete last word", "Hello."),
+            ("my favorite color is red, delete last word",
+             "My favorite color is."),
+            ("send it to bob undo last word alice", "Send it to alice."),
             ("call the client at 3pm and send the deck actually let's do 4pm",
              "Call the client at 4pm and send the deck."),
             ("the budget is 500 dollars actually make it 700 dollars",

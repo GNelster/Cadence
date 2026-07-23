@@ -4,6 +4,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+VERSION="${1:-1.1}"
+BUILD="${2:-2}"
+
+# Garrett's paid Apple Developer Program team (from Xcode's
+# IDEProvisioningTeamByIdentifier prefs) — used so a "Developer ID
+# Application" cert, once created for this team via Xcode ▸ Settings ▸
+# Accounts ▸ Manage Certificates, signs with the right team ID.
+DEVELOPMENT_TEAM="XX45YMU835"
+
 swift build -c release
 
 APP="build/Cadence.app"
@@ -17,7 +26,7 @@ if [ -f "Resources/Cadence.icns" ]; then
     cp Resources/Cadence.icns "$APP/Contents/Resources/Cadence.icns"
 fi
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -34,9 +43,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$BUILD</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
     <key>LSUIElement</key>
@@ -49,14 +58,25 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Prefer the stable local identity (keeps macOS permission grants valid
-# across rebuilds); fall back to ad-hoc.
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "WhisperFlow Dev"; then
+# Prefer a real "Developer ID Application" cert for this team (needed for
+# notarized, Gatekeeper-clean distribution outside the App Store). Fall
+# back to the stable local self-signed identity (keeps macOS permission
+# grants valid across rebuilds), then to plain ad-hoc.
+DEV_ID_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | grep "Developer ID Application: .*($DEVELOPMENT_TEAM)" \
+    | head -1 | sed -E 's/^[[:space:]]*[0-9]+\) [0-9A-F]+ "(.+)"$/\1/' || true)
+
+if [ -n "$DEV_ID_IDENTITY" ]; then
+    codesign --force --options runtime --timestamp \
+        --sign "$DEV_ID_IDENTITY" "$APP"
+    echo "Signed with '$DEV_ID_IDENTITY' (team $DEVELOPMENT_TEAM, hardened runtime) — ready to notarize."
+elif security find-identity -v -p codesigning 2>/dev/null | grep -q "WhisperFlow Dev"; then
     codesign --force --sign "WhisperFlow Dev" "$APP"
-    echo "Signed with 'WhisperFlow Dev'."
+    echo "Signed with 'WhisperFlow Dev' (local only, not notarizable)."
+    echo "For a distributable build: Xcode ▸ Settings ▸ Accounts ▸ Manage Certificates ▸ + ▸ Developer ID Application, under team $DEVELOPMENT_TEAM."
 else
     codesign --force --sign - "$APP"
     echo "Signed ad-hoc (run scripts/make_signing_cert.sh for a stable identity)."
 fi
 
-echo "Built $APP"
+echo "Built $APP ($VERSION build $BUILD)"

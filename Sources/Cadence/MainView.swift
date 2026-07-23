@@ -48,6 +48,141 @@ enum Palette {
     static let accent = dynamic(
         NSColor(red: 0.32, green: 0.35, blue: 0.40, alpha: 1),
         NSColor(red: 0.62, green: 0.66, blue: 0.72, alpha: 1))
+    /// The app icon's own graphite gradient — same top-to-bottom stops as
+    /// scripts/make_icon.swift. Reused anywhere Cadence needs a recognizably
+    /// "its own" dark surface (onboarding, the recording pill) rather than
+    /// a generic black, same purpose as `banner` but with the icon's actual
+    /// gradient instead of a flat fill.
+    static let iconGradient = LinearGradient(
+        colors: [
+            Color(red: 0.40, green: 0.43, blue: 0.48),
+            Color(red: 0.09, green: 0.10, blue: 0.12),
+        ], startPoint: .top, endPoint: .bottom)
+}
+
+// MARK: - Shared page components
+
+/// Centered icon + message for an empty list — used wherever a page's
+/// primary content (dictionary entries, snippets, app rules, learned
+/// corrections) hasn't been populated yet, instead of just an empty card.
+struct EmptyState: View {
+    let icon: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 26))
+                .foregroundStyle(Palette.accent.opacity(0.6))
+            Text(title).font(.body.weight(.medium))
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+}
+
+/// A small rounded tag — vocabulary hints, quick-reference labels.
+struct TagChip: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(Palette.ink.opacity(0.85))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Palette.tint, in: Capsule())
+    }
+}
+
+/// Wraps chips left-to-right, moving to a new line when a chip won't fit.
+struct FlowChips: View {
+    let items: [String]
+
+    var body: some View {
+        FlowLayout(spacing: 6, lineSpacing: 8) {
+            ForEach(items, id: \.self) { item in
+                TagChip(text: item)
+            }
+        }
+    }
+}
+
+/// Minimal flow layout: places subviews left-to-right, wrapping to a new
+/// row when one would overflow the proposed width.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    var lineSpacing: CGFloat = 6
+
+    func sizeThatFits(
+        proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                x = 0
+                y += rowHeight + lineSpacing
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        y += rowHeight
+        return CGSize(width: width.isFinite ? width : x, height: y)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x: CGFloat = bounds.minX
+        var y: CGFloat = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + lineSpacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+/// An installed app's actual icon, looked up by bundle ID — falls back to a
+/// generic app-window glyph if the app can't be found. Used to make per-app
+/// lists (Style overrides, dictation exclusions) more scannable at a glance.
+struct AppIconView: View {
+    let bundleID: String
+    var size: CGFloat = 20
+
+    var body: some View {
+        Group {
+            if let icon = Self.icon(forBundleID: bundleID) {
+                Image(nsImage: icon).resizable()
+            } else {
+                Image(systemName: "app.dashed")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    private static func icon(forBundleID bundleID: String) -> NSImage? {
+        guard let url = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: bundleID) else { return nil }
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
 }
 
 // MARK: - Pages
@@ -161,13 +296,6 @@ struct MainView: View {
                     .frame(maxWidth: 460, alignment: .trailing)
             }
             RecordingPill(app: app)
-            Image(systemName: "bell")
-                .foregroundStyle(Palette.ink.opacity(0.75))
-                .onTapGesture { page = .help }
-            Image(systemName: "person.circle")
-                .font(.system(size: 18))
-                .foregroundStyle(Palette.ink.opacity(0.75))
-                .onTapGesture { page = .settings }
         }
         .padding(.top, 18)
         .padding(.horizontal, 24)
@@ -314,9 +442,10 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                Text("∞ words remaining")
+                Text("Unlimited, always")
                     .font(.system(size: 14, weight: .semibold))
-                Text("Everything runs on-device. Unlimited, free, private.")
+                Text("Every dictation runs on-device — no quotas, no " +
+                     "subscription, nothing to track.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button { page = .help } label: {
@@ -547,8 +676,18 @@ struct DictionaryPage: View {
                 .foregroundStyle(.secondary)
 
             VStack(spacing: 10) {
+                if rows.isEmpty {
+                    EmptyState(
+                        icon: "text.book.closed",
+                        title: "No custom spellings yet",
+                        detail: "Add a name or term below and Cadence will " +
+                            "always spell it your way, in every dictation.")
+                }
                 ForEach($rows) { $row in
                     HStack {
+                        Image(systemName: "text.quote")
+                            .foregroundStyle(Palette.accent)
+                            .frame(width: 18)
                         TextField("spoken phrase", text: $row.spoken)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { save() }
@@ -565,8 +704,12 @@ struct DictionaryPage: View {
                         }
                         .buttonStyle(.borderless)
                     }
+                    Divider()
                 }
                 HStack {
+                    Image(systemName: "plus")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
                     TextField("new spoken phrase", text: $newSpoken)
                         .textFieldStyle(.roundedBorder)
                     Image(systemName: "arrow.right")
@@ -575,6 +718,7 @@ struct DictionaryPage: View {
                         .textFieldStyle(.roundedBorder)
                     Button { add() } label: {
                         Image(systemName: "plus.circle.fill")
+                            .foregroundStyle(Palette.accent)
                     }
                     .buttonStyle(.borderless)
                     .disabled(newSpoken.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -632,6 +776,10 @@ struct ScratchpadPage: View {
         AppPaths.supportDirectory.appendingPathComponent("scratchpad.txt")
     }
 
+    private var wordCount: Int {
+        text.split(whereSeparator: { $0.isWhitespace }).count
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Scratchpad")
@@ -639,12 +787,29 @@ struct ScratchpadPage: View {
                 .padding(.top, 24)
             Text("A place to park text. Saved automatically.")
                 .foregroundStyle(.secondary)
-            TextEditor(text: $text)
-                .font(.system(size: 14))
-                .scrollContentBackground(.hidden)
-                .padding(16)
-                .frame(minHeight: 380)
-                .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+            ZStack(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text("Jot something down, or dictate here — it saves " +
+                         "automatically, without pasting into another app.")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 24)
+                        .padding(.leading, 21)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $text)
+                    .font(.system(size: 14))
+                    .scrollContentBackground(.hidden)
+                    .padding(16)
+            }
+            .frame(minHeight: 380)
+            .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+            if !text.isEmpty {
+                Text("\(wordCount) word\(wordCount == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .onAppear {
             text = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
@@ -660,6 +825,8 @@ struct ScratchpadPage: View {
 struct SettingsPage: View {
     @ObservedObject var app: AppDelegate
     @State private var supportedLocaleIDs: [String] = []
+    @State private var excludedApps: [String: String] = ExcludedAppsSettings.apps
+    @State private var pickedExclusionBundleID: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -807,6 +974,55 @@ struct SettingsPage: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Excluded apps").font(.headline)
+                Text("The dictation key won't activate while one of these apps " +
+                     "is frontmost — handy for password managers or anywhere " +
+                     "you don't want Cadence listening.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if excludedApps.isEmpty {
+                    Text("No excluded apps.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(excludedApps.sorted(by: { $0.value < $1.value }),
+                        id: \.key) { bundleID, name in
+                    HStack {
+                        Text(name)
+                        Spacer()
+                        Button {
+                            excludedApps.removeValue(forKey: bundleID)
+                            ExcludedAppsSettings.apps = excludedApps
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    Divider()
+                }
+                HStack {
+                    Picker("", selection: $pickedExclusionBundleID) {
+                        Text("Choose an app…").tag("")
+                        ForEach(installedRegularApps(), id: \.bundleID) { appInfo in
+                            Text(appInfo.name).tag(appInfo.bundleID)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    Button("Add") {
+                        guard let appInfo = installedRegularApps().first(
+                            where: { $0.bundleID == pickedExclusionBundleID })
+                        else { return }
+                        excludedApps[appInfo.bundleID] = appInfo.name
+                        ExcludedAppsSettings.apps = excludedApps
+                        pickedExclusionBundleID = ""
+                    }
+                    .disabled(pickedExclusionBundleID.isEmpty)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
         }
         .onAppear(perform: loadLocales)
     }
@@ -888,6 +1104,11 @@ struct HelpPage: View {
                     "becomes “the meeting's at 4pm,” without touching the rest " +
                     "of the sentence.")
                 Divider()
+                helpRow("delete.left", "Delete last word",
+                    "Said the wrong word? Say “delete last word” (or “scratch " +
+                    "last word,” “undo last word”) to drop just that one word " +
+                    "and keep going, without erasing the whole sentence.")
+                Divider()
                 helpRow("arrow.uturn.left.circle", "Undo the last paste",
                     "Hold \(app.hotkey.displayName) again and say only “scratch " +
                     "that” (or “never mind,” “go back”) with nothing else — " +
@@ -898,6 +1119,31 @@ struct HelpPage: View {
                     "speech model. No audio or text ever leaves your machine.")
             }
             .padding(20)
+            .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("New to Cadence?").font(.body.weight(.medium))
+                    Text("Replay the first-run walkthrough — push-to-talk, " +
+                         "hands-free, self-correct, and permissions.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    app.replayOnboarding()
+                } label: {
+                    Label("View Onboarding", systemImage: "sparkles")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(Palette.onInk)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Palette.ink, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
         }
     }
@@ -931,6 +1177,16 @@ struct SnippetsPage: View {
                  "inserted instead — signatures, addresses, meeting links, " +
                  "canned replies.")
                 .foregroundStyle(.secondary)
+
+            if snippets.isEmpty {
+                EmptyState(
+                    icon: "scissors",
+                    title: "No snippets yet",
+                    detail: "Save a signature, address, or canned reply below, " +
+                        "then just say the trigger phrase while dictating.")
+                .padding(20)
+                .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+            }
 
             ForEach($snippets) { $snippet in
                 VStack(alignment: .leading, spacing: 8) {
@@ -1054,12 +1310,16 @@ struct StylePage: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Per-app styles").font(.headline)
                 if overrides.isEmpty {
-                    Text("No app rules yet.")
-                        .font(.callout).foregroundStyle(.secondary)
+                    EmptyState(
+                        icon: "textformat",
+                        title: "No app rules yet",
+                        detail: "Pick an app below to give it its own tone — " +
+                            "formal in your editor, casual in chat.")
                 }
                 ForEach(overrides.sorted(by: { $0.value.appName < $1.value.appName }),
                         id: \.key) { bundleID, rule in
                     HStack {
+                        AppIconView(bundleID: bundleID)
                         Text(rule.appName)
                         Spacer()
                         Picker("", selection: Binding(
@@ -1087,7 +1347,7 @@ struct StylePage: View {
                 }
                 HStack {
                     Picker("", selection: $pickedBundleID) {
-                        Text("Choose a running app…").tag("")
+                        Text("Choose an app…").tag("")
                         ForEach(runningApps, id: \.bundleID) { appInfo in
                             Text(appInfo.name).tag(appInfo.bundleID)
                         }
@@ -1112,15 +1372,53 @@ struct StylePage: View {
     }
 
     private var runningApps: [(bundleID: String, name: String)] {
-        NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular }
-            .compactMap { application in
-                guard let bundleID = application.bundleIdentifier,
-                      let name = application.localizedName else { return nil }
-                return (bundleID, name)
-            }
-            .sorted { $0.name < $1.name }
+        installedRegularApps()
     }
+}
+
+/// All installed apps found in the standard Applications directories — not
+/// just currently running ones — the pool offered when picking an app for a
+/// per-app style override or a dictation exclusion. Reads each app bundle's
+/// Info.plist directly rather than going through Spotlight/LaunchServices,
+/// since Spotlight's index can be disabled or incomplete on some Macs.
+/// Computed once per launch and cached, since scanning ~100+ .app bundles
+/// on every SwiftUI re-render would be wasteful.
+private let installedRegularAppsCache: [(bundleID: String, name: String)] =
+    scanInstalledRegularApps()
+
+private func installedRegularApps() -> [(bundleID: String, name: String)] {
+    installedRegularAppsCache
+}
+
+private func scanInstalledRegularApps() -> [(bundleID: String, name: String)] {
+    let fileManager = FileManager.default
+    let roots = [
+        "/Applications",
+        "/Applications/Utilities",
+        "/System/Applications",
+        "/System/Applications/Utilities",
+        NSHomeDirectory() + "/Applications",
+    ]
+    var seenBundleIDs = Set<String>()
+    var results: [(bundleID: String, name: String)] = []
+    for root in roots {
+        guard let entries = try? fileManager.contentsOfDirectory(atPath: root) else { continue }
+        for entry in entries where entry.hasSuffix(".app") {
+            let infoPlistPath = "\(root)/\(entry)/Contents/Info.plist"
+            guard let data = fileManager.contents(atPath: infoPlistPath),
+                  let plist = try? PropertyListSerialization.propertyList(
+                    from: data, options: [], format: nil) as? [String: Any],
+                  let bundleID = plist["CFBundleIdentifier"] as? String,
+                  !seenBundleIDs.contains(bundleID)
+            else { continue }
+            seenBundleIDs.insert(bundleID)
+            let name = (plist["CFBundleDisplayName"] as? String)
+                ?? (plist["CFBundleName"] as? String)
+                ?? String(entry.dropLast(".app".count))
+            results.append((bundleID, name))
+        }
+    }
+    return results.sorted { $0.name < $1.name }
 }
 
 // MARK: - Transforms
@@ -1153,7 +1451,12 @@ struct TransformsPage: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(Transform.all) { transform in
-                    HStack(alignment: .top) {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: transformIcon(for: transform))
+                            .font(.system(size: 15))
+                            .foregroundStyle(Palette.accent)
+                            .frame(width: 34, height: 34)
+                            .background(Palette.tint, in: RoundedRectangle(cornerRadius: 10))
                         Text(transform.keyLabel)
                             .font(.system(size: 13, weight: .semibold,
                                           design: .monospaced))
@@ -1229,6 +1532,14 @@ struct TransformsPage: View {
             }
         }
     }
+
+    private func transformIcon(for transform: Transform) -> String {
+        switch transform.id {
+        case "polish": return "sparkles"
+        case "promptEngineer": return "wand.and.sparkles"
+        default: return "text.badge.star"
+        }
+    }
 }
 
 
@@ -1301,6 +1612,25 @@ final class TrainingModel: ObservableObject {
     }
 }
 
+/// Small breathing red dot indicating an active recording, used where a
+/// full waveform would be overkill.
+struct PulsingDot: View {
+    @State private var isLarge = false
+
+    var body: some View {
+        Circle()
+            .fill(Color.red)
+            .frame(width: 8, height: 8)
+            .scaleEffect(isLarge ? 1.3 : 0.8)
+            .opacity(isLarge ? 1 : 0.6)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                    isLarge = true
+                }
+            }
+    }
+}
+
 struct TrainingPage: View {
     @ObservedObject var app: AppDelegate
     @StateObject private var model = TrainingModel()
@@ -1317,96 +1647,123 @@ struct TrainingPage: View {
                  "is applied to every future dictation, and the word is fed to " +
                  "the speech model as expected vocabulary.")
                 .foregroundStyle(.secondary)
+            teachCard
+            correctionsCard
+        }
+        .onAppear { learned = LearnedStore.load() }
+    }
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Teach a word or phrase").font(.headline)
-                HStack(spacing: 10) {
-                    TextField("word or phrase, e.g. “Søren” or “Baseten”",
-                              text: $target)
-                        .textFieldStyle(.roundedBorder)
-                    Button {
-                        model.toggle(app: app, target: target)
-                    } label: {
-                        Label(model.isRecording ? "Stop" : "Record",
-                              systemImage: model.isRecording
-                                ? "stop.circle.fill" : "mic.circle.fill")
-                            .foregroundStyle(model.isRecording ? .red : Palette.accent)
-                    }
-                    .disabled(target.trimmingCharacters(in: .whitespaces).isEmpty
-                              || model.isProcessing || !app.micAuthorized)
-                    if model.isProcessing {
-                        ProgressView().controlSize(.small)
-                    }
+    private var teachCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Teach a word or phrase").font(.headline)
+            HStack(spacing: 10) {
+                TextField("word or phrase, e.g. “Søren” or “Baseten”",
+                          text: $target)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    model.toggle(app: app, target: target)
+                } label: {
+                    Label(model.isRecording ? "Stop" : "Record",
+                          systemImage: model.isRecording
+                            ? "stop.circle.fill" : "mic.circle.fill")
+                        .foregroundStyle(model.isRecording ? .red : Palette.accent)
                 }
-                if model.isRecording {
-                    Label("Say “\(target)” now, then press Stop.",
-                          systemImage: "waveform")
+                .disabled(target.trimmingCharacters(in: .whitespaces).isEmpty
+                          || model.isProcessing || !app.micAuthorized)
+                if model.isProcessing {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            if model.isRecording {
+                HStack(spacing: 8) {
+                    PulsingDot()
+                    Text("Say “\(target)” now, then press Stop.")
                         .font(.callout)
                         .foregroundStyle(.red)
                 }
-                if let result = model.result {
-                    Text(result)
-                        .font(.callout)
-                        .foregroundStyle(Palette.accent)
-                        .onAppear { learned = LearnedStore.load() }
-                }
-                Text("Tip: repeat a word 2–3 times — different mishearings each " +
-                     "become their own correction.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Learned corrections").font(.headline)
-                Text("Also learned automatically when you fix a transcript in " +
-                     "History (pencil icon).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if learned.corrections.isEmpty {
-                    Text("Nothing learned yet.")
-                        .font(.callout).foregroundStyle(.secondary)
-                } else {
-                    ForEach(learned.corrections.reversed()) { correction in
-                        HStack {
-                            Text("“\(correction.heard)”")
-                            Image(systemName: "arrow.right")
-                                .foregroundStyle(.secondary)
-                            Text("“\(correction.intended)”")
-                                .fontWeight(.medium)
-                            if correction.timesSeen > 1 {
-                                Text("×\(correction.timesSeen)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button {
-                                var data = LearnedStore.load()
-                                data.corrections.removeAll { $0.id == correction.id }
-                                LearnedStore.save(data)
-                                learned = data
-                            } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                        .font(.system(size: 13))
-                        Divider()
-                    }
-                }
-                if !learned.terms.isEmpty {
-                    Text("Vocabulary hints: " + learned.terms.joined(separator: ", "))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 4)
-                }
+            if let result = model.result {
+                Text(result)
+                    .font(.callout)
+                    .foregroundStyle(Palette.accent)
+                    .onAppear { learned = LearnedStore.load() }
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+            Text("Tip: repeat a word 2–3 times — different mishearings each " +
+                 "become their own correction.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .onAppear { learned = LearnedStore.load() }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var correctionsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Learned corrections").font(.headline)
+            Text("Recorded here whenever you teach a word above.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if learned.corrections.isEmpty {
+                EmptyState(
+                    icon: "waveform.badge.mic",
+                    title: "Nothing learned yet",
+                    detail: "Teach a word above, or correct a mistranscription " +
+                        "and Cadence will remember it here.")
+            } else {
+                correctionsList
+            }
+            if !learned.terms.isEmpty {
+                Text("Vocabulary hints").font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                FlowChips(items: learned.terms)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.card, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var correctionsList: some View {
+        VStack(spacing: 8) {
+            ForEach(learned.corrections.reversed()) { correction in
+                correctionRow(correction)
+            }
+        }
+    }
+
+    private func correctionRow(_ correction: LearnedCorrection) -> some View {
+        HStack {
+            Text("“\(correction.heard)”")
+                .foregroundStyle(.secondary)
+            Image(systemName: "arrow.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("“\(correction.intended)”")
+                .fontWeight(.medium)
+            if correction.timesSeen > 1 {
+                Text("×\(correction.timesSeen)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Palette.tint, in: Capsule())
+            }
+            Spacer()
+            Button {
+                var data = LearnedStore.load()
+                data.corrections.removeAll { $0.id == correction.id }
+                LearnedStore.save(data)
+                learned = data
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Palette.panel, in: RoundedRectangle(cornerRadius: 10))
     }
 }

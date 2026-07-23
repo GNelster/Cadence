@@ -19,6 +19,12 @@ final class AudioRecorder {
     /// every tap buffer, so callers can drive a live waveform UI.
     var onLevel: ((Float) -> Void)?
 
+    /// Fires with each raw tap buffer (still in the mic's native format,
+    /// unconverted) on the audio thread — for callers like LiveTranscriber
+    /// that need the audio itself, not just its level. Called synchronously
+    /// on the same real-time thread as the tap; callers must not block.
+    var onBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     static func requestMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -48,6 +54,7 @@ final class AudioRecorder {
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             try? self?.file?.write(from: buffer)
             self?.emitLevel(from: buffer)
+            self?.onBuffer?(buffer)
         }
 
         file = audioFile

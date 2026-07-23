@@ -8,9 +8,11 @@ leave your Mac.
 
 ![Cadence dashboard](Resources/screenshot.png)
 
-Cadence is an open-source, fully local take on the modern AI dictation app
+Cadence is a source-available, fully local take on the modern AI dictation app
 (in the spirit of Wispr Flow), built natively in Swift on Apple's on-device
-speech and language models, with an optional local Whisper engine.
+speech and language models, with an optional local Whisper engine. The source
+is public for transparency — so you can verify the privacy claims yourself —
+but Cadence isn't open source; see [License](#license).
 
 ## Features
 
@@ -141,8 +143,10 @@ correction" pass (retargets a spoken time/date/day/amount) runs first,
 then a "cancel phrase" pass (erases back to the start of the sentence),
 before the usual filler-removal and cleanup rules.
 
-See [PLAN.md](PLAN.md) for the original design document.
-
 ## License
 
-[MIT](LICENSE). Not affiliated with Wispr Flow, OpenAI, or Apple.
+Source-available, all rights reserved — see [LICENSE](LICENSE) for the
+source code terms and [EULA.md](EULA.md) for the terms of running the
+compiled app. Copying, modifying, redistributing, or selling it isn't
+permitted without written permission. Not affiliated with Wispr Flow,
+OpenAI, or Apple.

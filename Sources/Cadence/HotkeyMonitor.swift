@@ -42,7 +42,12 @@ final class HotkeyMonitor {
     var onHandsFreeChange: ((Bool) -> Void)?
 
     private(set) var isHandsFree = false
-    private var monitor: Any?
+    /// `addGlobalMonitorForEvents` only reports events bound for *other*
+    /// apps — while Cadence's own window is key (its dashboard, onboarding,
+    /// or the Scratchpad), those events never reach it. The local monitor
+    /// covers exactly that gap.
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
     private var keyIsDown = false
     private var pressStartedAt: Date?
     private var lastTapEndedAt: Date?
@@ -57,17 +62,26 @@ final class HotkeyMonitor {
 
     func startMonitoring() {
         stopMonitoring()
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
             [weak self] event in
             self?.handle(event)
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            self?.handle(event)
+            return event
         }
     }
 
     func stopMonitoring() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
         }
-        monitor = nil
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+        }
+        globalMonitor = nil
+        localMonitor = nil
     }
 
     private func handle(_ event: NSEvent) {

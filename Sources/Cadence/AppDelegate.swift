@@ -20,11 +20,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var hotkey: HotkeyMonitor.Hotkey = Settings.hotkey
     @Published var localeID: String = Settings.locale.identifier
     @Published var lastError: String?
+    @Published var showOnboarding: Bool = !Settings.hasCompletedOnboarding
 
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
     private let recorder = AudioRecorder()
     private let recordingIndicator = RecordingIndicatorController()
+    private let liveTranscriber = LiveTranscriber()
     private let history = HistoryStore()
     private var transcriber = Transcriber(locale: Settings.locale)
     private lazy var hotkeyMonitor = HotkeyMonitor(hotkey: Settings.hotkey)
@@ -102,7 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func showMainWindow() {
         if window == nil {
-            let hosting = NSHostingController(rootView: MainView(app: self))
+            let hosting = NSHostingController(rootView: RootView(app: self))
             let newWindow = NSWindow(contentViewController: hosting)
             newWindow.title = "Cadence"
             newWindow.styleMask = [
@@ -190,6 +192,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         rebuildMenu()
     }
 
+    func completeOnboarding() {
+        Settings.hasCompletedOnboarding = true
+        withAnimation(.easeInOut(duration: 0.3)) {
+            showOnboarding = false
+        }
+    }
+
+    /// Re-shows the walkthrough on demand (from the Help page) without
+    /// touching the "seen it once" flag — finishing the replay just sets
+    /// that flag to true again, a no-op if it already was.
+    func replayOnboarding() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            showOnboarding = true
+        }
+    }
+
     /// Deletes any stale Accessibility grant (recorded against an older
     /// build's signature) and relaunches so macOS asks again — the new grant
     /// is recorded against the stable certificate and survives updates.
@@ -273,6 +291,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         recorder.onLevel = { [weak self] level in
             self?.recordingIndicator.updateLevel(level)
         }
+        recorder.onBuffer = { [weak self] buffer in
+            self?.liveTranscriber.feed(buffer)
+        }
+        liveTranscriber.onPartialText = { [weak self] text in
+            self?.recordingIndicator.updatePartialText(text)
+        }
         hotkeyMonitor.onStart = { [weak self] in
             DispatchQueue.main.async { self?.startRecording() }
         }
@@ -282,6 +306,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         hotkeyMonitor.onCancel = { [weak self] in
             DispatchQueue.main.async {
                 self?.recorder.cancel()
+                self?.liveTranscriber.stop()
                 self?.uiState = .idle
                 self?.recordingIndicator.hide()
             }
@@ -300,15 +325,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func startRecording() {
         guard uiState != .recording else { return }
+        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        guard !ExcludedAppsSettings.isExcluded(bundleID: frontmostBundleID) else { return }
         do {
             try recorder.start()
             recordingStartedAt = Date()
-            recordingTargetBundleID =
-                NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            recordingTargetBundleID = frontmostBundleID
             uiState = .recording
             lastError = nil
             NSSound(named: "Pop")?.play()
             recordingIndicator.show(state: .recording)
+            let locale = Settings.locale
+            let biasTerms = LearnedStore.biasTerms()
+            Task { [liveTranscriber] in
+                await liveTranscriber.start(locale: locale, biasTerms: biasTerms)
+            }
         } catch {
             lastError = "Could not start recording: \(error.localizedDescription)"
             NSSound(named: "Basso")?.play()
@@ -317,6 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private func stopAndTranscribe() {
         isHandsFree = false
+        liveTranscriber.stop()
         guard let url = recorder.stop() else {
             uiState = .idle
             recordingIndicator.hide()
@@ -390,7 +422,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// single undo step for it) and drops the matching history entry, with
     /// a visual confirmation since there's no text to show for it.
     private func undoLastDictation() {
-        guard AXIsProcessTrusted(), let last = history.entries.first else { return }
+        guard let last = history.entries.first else { return }
+        guard AXIsProcessTrusted() else {
+            lastError = "Accessibility isn't active for this build, so " +
+                "the last dictation couldn't be undone. Fix this in Settings."
+            NSSound(named: "Basso")?.play()
+            return
+        }
         TextInserter.undo()
         history.delete(id: last.id)
         entries = history.entries
@@ -407,15 +445,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         rebuildMenu()
     }
 
+    /// Matches the app icon's own mark (see scripts/make_icon.swift): a
+    /// closing quotation mark, not a microphone. Stays neutral/template in
+    /// every state — the floating recording pill is what signals activity
+    /// now, so the menu bar icon doesn't need to change color too.
     private func updateIcon() {
-        let symbol: String
+        let symbolName: String
         switch uiState {
-        case .idle: symbol = "mic"
-        case .recording: symbol = isHandsFree ? "mic.badge.plus" : "mic.fill"
-        case .processing: symbol = "hourglass"
+        case .idle: symbolName = "quote.closing"
+        case .recording: symbolName = isHandsFree ? "quote.bubble.fill" : "quote.closing"
+        case .processing: symbolName = "hourglass"
         }
-        statusItem.button?.image = NSImage(
-            systemSymbolName: symbol, accessibilityDescription: "Cadence")
+        let image = NSImage(
+            systemSymbolName: symbolName, accessibilityDescription: "Cadence")
+        image?.isTemplate = true
+        statusItem.button?.image = image
     }
 
     private func rebuildMenu() {
@@ -435,6 +479,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         menu.addItem(hint)
         menu.addItem(.separator())
 
+        let copyLast = NSMenuItem(
+            title: "Copy Last Dictation", action: #selector(copyLastDictation),
+            keyEquivalent: "")
+        copyLast.target = self
+        copyLast.isEnabled = !history.entries.isEmpty
+        menu.addItem(copyLast)
+        menu.addItem(.separator())
+
         let quit = NSMenuItem(
             title: "Quit Cadence", action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q")
@@ -447,6 +499,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     @objc private func openMainWindow() {
         showMainWindow()
+    }
+
+    @objc private func copyLastDictation() {
+        guard let last = history.entries.first else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(last.text, forType: .string)
     }
 }
 
@@ -503,5 +562,37 @@ enum Settings {
 
     static var locale: Locale {
         Locale(identifier: localeIdentifier)
+    }
+
+    static var hasCompletedOnboarding: Bool {
+        get { defaults.bool(forKey: "hasCompletedOnboarding") }
+        set { defaults.set(newValue, forKey: "hasCompletedOnboarding") }
+    }
+}
+
+/// Apps where the dictation key is a no-op — e.g. password managers, where
+/// you'd never want a stray fn-press to start recording.
+enum ExcludedAppsSettings {
+    private static let defaults = UserDefaults.standard
+    private static let key = "excludedApps"
+
+    /// bundleID → app display name
+    static var apps: [String: String] {
+        get {
+            guard let data = defaults.data(forKey: key),
+                  let dict = try? JSONDecoder().decode([String: String].self, from: data)
+            else { return [:] }
+            return dict
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: key)
+            }
+        }
+    }
+
+    static func isExcluded(bundleID: String?) -> Bool {
+        guard let bundleID else { return false }
+        return apps.keys.contains(bundleID)
     }
 }

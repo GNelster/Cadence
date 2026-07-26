@@ -10,11 +10,13 @@ final class HotkeyMonitor {
     enum Hotkey: String, CaseIterable {
         case fn
         case rightOption
+        case leftOption
 
         var displayName: String {
             switch self {
-            case .fn: return "fn (Globe)"
+            case .fn: return "fn / Globe"
             case .rightOption: return "Right Option (⌥)"
+            case .leftOption: return "Left Option (⌥)"
             }
         }
 
@@ -22,13 +24,14 @@ final class HotkeyMonitor {
             switch self {
             case .fn: return 63
             case .rightOption: return 61
+            case .leftOption: return 58
             }
         }
 
         var flag: NSEvent.ModifierFlags {
             switch self {
             case .fn: return .function
-            case .rightOption: return .option
+            case .rightOption, .leftOption: return .option
             }
         }
     }

@@ -850,6 +850,22 @@ struct SettingsPage: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                 }
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Command mode")
+                        Text("Speak \"open Safari\" or \"select all\" to run commands " +
+                             "instead of typing text. Off by default.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { app.commandModeEnabled },
+                        set: { app.setCommandModeEnabled($0) }))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1374,51 +1390,6 @@ struct StylePage: View {
     private var runningApps: [(bundleID: String, name: String)] {
         installedRegularApps()
     }
-}
-
-/// All installed apps found in the standard Applications directories — not
-/// just currently running ones — the pool offered when picking an app for a
-/// per-app style override or a dictation exclusion. Reads each app bundle's
-/// Info.plist directly rather than going through Spotlight/LaunchServices,
-/// since Spotlight's index can be disabled or incomplete on some Macs.
-/// Computed once per launch and cached, since scanning ~100+ .app bundles
-/// on every SwiftUI re-render would be wasteful.
-private let installedRegularAppsCache: [(bundleID: String, name: String)] =
-    scanInstalledRegularApps()
-
-private func installedRegularApps() -> [(bundleID: String, name: String)] {
-    installedRegularAppsCache
-}
-
-private func scanInstalledRegularApps() -> [(bundleID: String, name: String)] {
-    let fileManager = FileManager.default
-    let roots = [
-        "/Applications",
-        "/Applications/Utilities",
-        "/System/Applications",
-        "/System/Applications/Utilities",
-        NSHomeDirectory() + "/Applications",
-    ]
-    var seenBundleIDs = Set<String>()
-    var results: [(bundleID: String, name: String)] = []
-    for root in roots {
-        guard let entries = try? fileManager.contentsOfDirectory(atPath: root) else { continue }
-        for entry in entries where entry.hasSuffix(".app") {
-            let infoPlistPath = "\(root)/\(entry)/Contents/Info.plist"
-            guard let data = fileManager.contents(atPath: infoPlistPath),
-                  let plist = try? PropertyListSerialization.propertyList(
-                    from: data, options: [], format: nil) as? [String: Any],
-                  let bundleID = plist["CFBundleIdentifier"] as? String,
-                  !seenBundleIDs.contains(bundleID)
-            else { continue }
-            seenBundleIDs.insert(bundleID)
-            let name = (plist["CFBundleDisplayName"] as? String)
-                ?? (plist["CFBundleName"] as? String)
-                ?? String(entry.dropLast(".app".count))
-            results.append((bundleID, name))
-        }
-    }
-    return results.sorted { $0.name < $1.name }
 }
 
 // MARK: - Transforms

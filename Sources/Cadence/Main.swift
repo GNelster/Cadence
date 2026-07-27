@@ -10,7 +10,8 @@ struct CadenceMain {
         if CommandLine.arguments.dropFirst().contains("--selftest") {
             let formatterPassed = TextFormatter.runSelfTest()
             let learnedPassed = LearnedStore.runSelfTest()
-            exit(formatterPassed && learnedPassed ? 0 : 1)
+            let commandRouterPassed = CommandRouter.runSelfTest()
+            exit(formatterPassed && learnedPassed && commandRouterPassed ? 0 : 1)
         }
 
         let app = NSApplication.shared

@@ -37,10 +37,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var whisperReady = false
     @Published var voiceProfile: VoiceProfile? = VoiceProfileStore.load()
     @Published var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
+    @Published var commandModeEnabled: Bool = Settings.commandModeEnabled
     private(set) lazy var transformManager = TransformManager(engine: rewriteEngine)
 
     /// Extra status line shown in the top bar while a transform runs.
     @Published var transformStatus: String?
+
+    /// Bundle ID of the frontmost app at the moment of the most recent
+    /// Cadence paste — used to gate chained undos (see `undoLastDictation`).
+    private var lastPasteBundleID: String?
+    /// True once a chained (second-or-later consecutive) undo has been
+    /// performed since the last paste, so a further undo is re-validated
+    /// against `lastPasteBundleID`/`TextInserter.lastKnownChangeCount`
+    /// rather than assumed safe.
+    private var hasChainedUndoSinceLastPaste = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         entries = history.entries
@@ -184,6 +194,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             lastError = "Couldn't update Launch at Login: \(error.localizedDescription)"
         }
         launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    func setCommandModeEnabled(_ enabled: Bool) {
+        Settings.commandModeEnabled = enabled
+        commandModeEnabled = enabled
     }
 
     func clearHistoryEntries() {
@@ -334,7 +349,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             uiState = .recording
             lastError = nil
             NSSound(named: "Pop")?.play()
-            recordingIndicator.show(state: .recording)
+            // Onboarding's push-to-talk step shows its own inline preview of
+            // this pill — showing the real floating one too would just be
+            // a duplicate of the same waveform on screen at once.
+            if !showOnboarding {
+                recordingIndicator.show(state: .recording)
+            }
             let locale = Settings.locale
             let biasTerms = LearnedStore.biasTerms()
             Task { [liveTranscriber] in
@@ -366,6 +386,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             defer { try? FileManager.default.removeItem(at: url) }
             do {
                 let raw = try await recognize(fileAt: url)
+                if Settings.commandModeEnabled, let command = CommandRouter().match(raw) {
+                    executeCommand(command)
+                    uiState = .idle
+                    recordingIndicator.hide()
+                    return
+                }
                 let formatter = TextFormatter()
                 if formatter.isStandaloneCancelPhrase(raw) {
                     undoLastDictation()
@@ -395,6 +421,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     refreshVoiceProfileIfDue()
                     if AXIsProcessTrusted() {
                         TextInserter.insert(formatted)
+                        lastPasteBundleID = targetBundleID
+                            ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                        hasChainedUndoSinceLastPaste = false
                     } else {
                         // Can't synthesize ⌘V without Accessibility — never
                         // fail silently: leave the transcript on the clipboard.
@@ -417,10 +446,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Runs a command-mode voice command (see `CommandRouter`) instead of
+    /// pasting text — the dictation is neither added to history nor typed.
+    private func executeCommand(_ command: CadenceCommand) {
+        switch command {
+        case .launchApp(let query):
+            guard let app = resolveAppName(query),
+                  let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.bundleID)
+            else {
+                lastError = "Couldn't find an app called \"\(query)\"."
+                NSSound(named: "Basso")?.play()
+                return
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+                if let error {
+                    DispatchQueue.main.async {
+                        self.lastError = "Couldn't open \(app.name): \(error.localizedDescription)"
+                        NSSound(named: "Basso")?.play()
+                    }
+                }
+            }
+            recordingIndicator.flashCommand()
+        case .keystroke(let keyCode, let flags):
+            guard AXIsProcessTrusted() else {
+                lastError = "Accessibility isn't active for this build, so that " +
+                    "command couldn't run. Fix this in Settings."
+                NSSound(named: "Basso")?.play()
+                return
+            }
+            TextInserter.sendKeystroke(keyCode, flags: CGEventFlags(rawValue: flags))
+            recordingIndicator.flashCommand()
+        }
+    }
+
     /// Handles a recording that was nothing but "scratch that" / "nevermind"
     /// / "go back" — reverts the paste from the previous dictation (⌘Z is a
     /// single undo step for it) and drops the matching history entry, with
     /// a visual confirmation since there's no text to show for it.
+    ///
+    /// Saying it again right after chains to the *next* prior dictation, but
+    /// only while there's no sign anything else happened in between: macOS
+    /// exposes no way to inspect a target app's undo stack or document text,
+    /// so this checks the two heuristics that are available — the frontmost
+    /// app hasn't changed, and the clipboard hasn't been touched by anything
+    /// but Cadence — since the first undo in the chain. If either changed,
+    /// a further ⌘Z could revert the user's own edit instead, so it refuses.
     private func undoLastDictation() {
         guard let last = history.entries.first else { return }
         guard AXIsProcessTrusted() else {
@@ -429,7 +500,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             NSSound(named: "Basso")?.play()
             return
         }
+        if hasChainedUndoSinceLastPaste {
+            let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            guard frontmostBundleID != nil, frontmostBundleID == lastPasteBundleID,
+                  NSPasteboard.general.changeCount == TextInserter.lastKnownChangeCount
+            else {
+                lastError = "Can't keep undoing — something changed since Cadence's " +
+                    "last paste. Use ⌘Z manually if you meant to."
+                NSSound(named: "Basso")?.play()
+                return
+            }
+        }
         TextInserter.undo()
+        hasChainedUndoSinceLastPaste = true
         history.delete(id: last.id)
         entries = history.entries
         rebuildMenu()
@@ -567,6 +650,14 @@ enum Settings {
     static var hasCompletedOnboarding: Bool {
         get { defaults.bool(forKey: "hasCompletedOnboarding") }
         set { defaults.set(newValue, forKey: "hasCompletedOnboarding") }
+    }
+
+    /// Opt-in voice commands ("open Safari", "select all") that execute
+    /// instead of being typed as prose. Off by default — `defaults.bool`
+    /// returns false when unset.
+    static var commandModeEnabled: Bool {
+        get { defaults.bool(forKey: "commandModeEnabled") }
+        set { defaults.set(newValue, forKey: "commandModeEnabled") }
     }
 }
 

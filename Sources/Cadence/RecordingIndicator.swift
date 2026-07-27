@@ -68,6 +68,17 @@ final class RecordingIndicatorController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.1, execute: workItem)
     }
 
+    /// Briefly shows a "Command" badge confirming a command-mode voice
+    /// command fired (a keystroke shortcut, or an app launch/switch whose
+    /// own effect may be off-screen), then hides on its own.
+    func flashCommand() {
+        model.state = .command
+        reveal()
+        let workItem = DispatchWorkItem { [weak self] in self?.hide() }
+        pendingAutoHide = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1, execute: workItem)
+    }
+
     func hide() {
         pendingAutoHide?.cancel()
         pendingAutoHide = nil
@@ -181,7 +192,7 @@ final class RecordingIndicatorController {
 }
 
 enum IndicatorState {
-    case recording, processing, undone
+    case recording, processing, undone, command
 }
 
 @MainActor
@@ -247,6 +258,8 @@ struct IndicatorView: View {
                 ProcessingDots()
             case .undone:
                 UndoneBadge()
+            case .command:
+                CommandBadge()
             case .recording:
                 HStack(spacing: 3) {
                     ForEach(Array(model.bars.enumerated()), id: \.offset) { _, level in
@@ -263,11 +276,13 @@ struct IndicatorView: View {
         .padding(.vertical, 9)
         .background(Capsule().fill(Palette.iconGradient))
         .overlay {
-            // Only the "Undone" flash gets a border — it's a rarer,
-            // momentary state worth visually calling out. The everyday
-            // waveform/processing pills stay borderless.
+            // Only the "Undone"/"Command" flashes get a border — they're
+            // rarer, momentary states worth visually calling out. The
+            // everyday waveform/processing pills stay borderless.
             if model.state == .undone {
                 Capsule().stroke(Color.orange.opacity(0.5), lineWidth: 1)
+            } else if model.state == .command {
+                Capsule().stroke(Color.accentColor.opacity(0.5), lineWidth: 1)
             }
         }
         .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
@@ -283,6 +298,18 @@ private struct UndoneBadge: View {
                 .font(.system(size: 12, weight: .medium))
         }
         .foregroundStyle(Color.orange)
+    }
+}
+
+private struct CommandBadge: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "command")
+                .font(.system(size: 12, weight: .semibold))
+            Text("Command")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .foregroundStyle(Color.accentColor)
     }
 }
 

@@ -8,6 +8,13 @@ enum TextInserter {
 
     typealias SavedClipboard = [[String: Data]]
 
+    /// Clipboard `changeCount` as of the moment Cadence last finished
+    /// touching it (i.e. right after restoring the user's clipboard post-
+    /// paste). Callers use this to detect whether anything external has
+    /// copied/pasted since — the basis for safely chaining consecutive
+    /// undos without reverting an unrelated manual edit.
+    static private(set) var lastKnownChangeCount = NSPasteboard.general.changeCount
+
     static func insert(_ text: String) {
         let saved = saveClipboard()
 
@@ -20,6 +27,7 @@ enum TextInserter {
         // Restore the user's clipboard once the paste has been consumed.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             restoreClipboard(saved)
+            lastKnownChangeCount = NSPasteboard.general.changeCount
         }
     }
 

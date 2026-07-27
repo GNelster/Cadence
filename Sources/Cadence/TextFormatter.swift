@@ -16,7 +16,8 @@ struct TextFormatter {
     static let cancelPhrases = [
         "scratch that", "scratch all that", "strike that", "strike all that",
         "delete that", "delete last sentence", "undo that", "undo last sentence",
-        "cancel that", "forget that", "forget it",
+        "cancel that", "forget that", "forget it", "take that back",
+        "scrap that", "wipe that", "disregard that",
         "never mind", "nevermind", "back up", "backup", "go back",
     ]
 
@@ -25,7 +26,7 @@ struct TextFormatter {
     /// to the start of the sentence.
     static let deleteLastWordPhrases = [
         "delete last word", "scratch last word", "undo last word",
-        "remove last word",
+        "remove last word", "take back that word", "scrap that word",
     ]
 
     /// A structured value type a pinpoint correction can retarget.
@@ -82,6 +83,7 @@ struct TextFormatter {
         if text.isEmpty { return "" }
 
         text = applyPinpointCorrection(to: text)
+        text = applyReplacePhrase(to: text)
         text = applyCancelCommands(to: text)
         text = applyDeleteLastWord(to: text)
         text = removeFillers(from: text)
@@ -100,8 +102,7 @@ struct TextFormatter {
     /// should trigger an undo instead of silently discarding the result of
     /// `format(_:)`.
     func isStandaloneCancelPhrase(_ raw: String) -> Bool {
-        let trimmed = removeFillers(from: raw.trimmingCharacters(in: .whitespacesAndNewlines))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = Self.normalizedUtterance(raw)
         guard !trimmed.isEmpty else { return false }
         let alternatives = Self.cancelPhrases
             .sorted { $0.count > $1.count }
@@ -111,9 +112,22 @@ struct TextFormatter {
         return trimmed.range(of: pattern, options: .regularExpression) != nil
     }
 
+    /// Trims and strips filler words from a raw utterance — the shared
+    /// normalization used both to detect a standalone cancel phrase and
+    /// (by `CommandRouter`) to match a whole-utterance voice command,
+    /// so ordinary filler words never block either kind of match.
+    static func normalizedUtterance(_ raw: String) -> String {
+        removeFillers(from: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Passes
 
     private func removeFillers(from text: String) -> String {
+        Self.removeFillers(from: text)
+    }
+
+    private static func removeFillers(from text: String) -> String {
         var result = text
         for filler in Self.fillers {
             // Filler optionally followed by a comma, as its own word.
@@ -172,6 +186,59 @@ struct TextFormatter {
             .map { "(?<\($0.name)>\($0.pattern))" }
             .joined(separator: "|")
         let pattern = "(?i)\\b(?:\(leadIn))\\b\(connector)\\s*(?:\(alternatives))"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
+    }
+
+    /// Swaps an arbitrary earlier phrase for a new one when the user says
+    /// "replace X with Y" (or "change X for Y" / "swap X to Y") — unlike
+    /// `applyPinpointCorrection`, X and Y aren't limited to a fixed set of
+    /// structured entities. No-ops (leaves the text untouched) unless X's
+    /// most recent prior occurrence can be found earlier in the text, so an
+    /// unmatched command fails visibly rather than silently vanishing.
+    private func applyReplacePhrase(to text: String) -> String {
+        guard let match = firstReplaceMatch(in: text),
+              let commandRange = Range(match.range, in: text),
+              let xRange = Range(match.range(withName: "x"), in: text),
+              let yRange = Range(match.range(withName: "y"), in: text)
+        else { return text }
+
+        let target = String(text[xRange]).trimmingCharacters(in: .whitespaces)
+        let replacement = String(text[yRange]).trimmingCharacters(in: .whitespaces)
+        guard !target.isEmpty,
+              let targetRegex = try? NSRegularExpression(
+                pattern: "(?i)\\b\(NSRegularExpression.escapedPattern(for: target))\\b")
+        else { return text }
+
+        let priorSearchRange = NSRange(text.startIndex..<commandRange.lowerBound, in: text)
+        guard let lastPrior = targetRegex.matches(in: text, range: priorSearchRange).last,
+              let priorRange = Range(lastPrior.range, in: text)
+        else { return text }
+
+        var result = text
+        result.removeSubrange(commandRange)
+        if commandRange.lowerBound > result.startIndex,
+           commandRange.lowerBound < result.endIndex {
+            let before = result.index(before: commandRange.lowerBound)
+            if !result[before].isWhitespace, !result[commandRange.lowerBound].isWhitespace {
+                result.insert(" ", at: commandRange.lowerBound)
+            }
+        }
+        result.replaceSubrange(priorRange, with: replacement)
+        return result
+    }
+
+    /// Matches a "replace X with Y" command: X is capped to a handful of
+    /// words, expanding only as far as needed (lazily) to reach the
+    /// "with"/"for"/"to" connector, so a bare "replace" mid-sentence can't
+    /// swallow an entire earlier clause and the *first* connector wins when
+    /// X or Y itself contains one of those words. Y runs lazily to the next
+    /// sentence boundary.
+    private func firstReplaceMatch(in text: String) -> NSTextCheckingResult? {
+        let shortSpan = "\\S+(?:\\s+\\S+){0,5}?"
+        let pattern = "(?i)\\b(?:replace|change|swap)\\s+(?:the\\s+)?" +
+            "(?<x>\(shortSpan))\\s+(?:with|for|to)\\s+(?:the\\s+)?" +
+            "(?<y>.+?)(?=[,.!?]|$)"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
         return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text))
     }
@@ -384,6 +451,18 @@ struct TextFormatter {
              "Let's meet on tuesday."),
             ("please actually check the door before you leave",
              "Please actually check the door before you leave."),
+            ("the meeting is at noon replace the meeting with the call",
+             "The call is at noon."),
+            ("let's meet tomorrow replace tomorrow with friday",
+             "Let's meet friday."),
+            ("please replace the filter with a new one",
+             "Please replace the filter with a new one."),
+            ("send the file and open the file replace the file with the folder",
+             "Send the file and open the folder."),
+            ("i love pizza take that back i hate it",
+             "I hate it."),
+            ("hello world scrap that ignore me",
+             "Ignore me."),
             ("", ""),
         ]
         var passed = true
@@ -402,6 +481,10 @@ struct TextFormatter {
             ("um, scratch that", true),
             ("go back", true),
             ("undo last sentence", true),
+            ("take that back", true),
+            ("scrap that", true),
+            ("wipe that", true),
+            ("disregard that", true),
             ("I went to the store, nevermind", false),
             ("let's go back to the store", false),
             ("hello world", false),

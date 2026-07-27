@@ -24,14 +24,24 @@ but Cadence isn't open source; see [License](#license).
     [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML on the
     Neural Engine). Your vocabulary is fed into the decoder prompt.
 - **Self-correct mid-sentence** — slip up? Say "scratch that," "never mind,"
-  "strike that," or "back up" and everything since the start of that
-  sentence is erased — no need to release the dictation key and start over.
+  "strike that," "take that back," "scrap that," or similar and everything
+  since the start of that sentence is erased — no need to release the
+  dictation key and start over.
 - **Pinpoint corrections** — for a quick fix to a time, date, day, or amount,
   just correct it in place: *"the meeting's at 3pm — actually let's do 4pm"*
   becomes *"the meeting's at 4pm,"* leaving the rest of the sentence intact.
+- **Arbitrary replace** — for anything else, just say "replace X with Y":
+  *"send it to the team — replace the team with engineering"* becomes
+  *"send it to engineering."*
 - **Undo the last paste** — hold the dictation key again and say only
   "scratch that" (or "never mind," "go back") with nothing else, and Cadence
-  undoes the previous paste, like ⌘Z.
+  undoes the previous paste, like ⌘Z. Say it again right after and it chains
+  to the dictation before that — as long as nothing else has touched the
+  app or clipboard in between, so a stray ⌘Z never reverts your own edits.
+- **Command mode** — an opt-in toggle (off by default, in Settings or during
+  onboarding) that runs voice commands instead of typing them: "open
+  Safari" or "switch to Mail" launches/focuses an app, "select all," "new
+  tab," or "delete that" run the matching shortcut in the frontmost app.
 - **Pronunciation learning** — a Voice Training page learns how *you* say
   tricky words; corrections you make to transcripts are diffed and learned
   automatically; everything biases future recognition.
